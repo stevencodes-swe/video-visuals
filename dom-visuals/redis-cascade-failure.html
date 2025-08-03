@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redis Cascade Failure - Flow Visualization</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+            background: #0a0a0a;
+            color: #fff;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            height: 700px;
+            position: relative;
+        }
+        
+        /* Main visualization canvas */
+        .flow-diagram {
+            position: relative;
+            width: 100%;
+            height: 500px;
+            margin-top: 80px;
+        }
+        
+        /* Timeline */
+        .timeline {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            text-align: center;
+            z-index: 100;
+        }
+        
+        .time-counter {
+            font-size: 36px;
+            font-weight: bold;
+            color: #ff3333;
+            font-family: monospace;
+            text-shadow: 0 0 10px rgba(255, 51, 51, 0.5);
+        }
+        
+        .phase-label {
+            font-size: 14px;
+            color: #666;
+            margin-top: 5px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        /* Request flow layers */
+        .layer {
+            position: absolute;
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .clients-layer {
+            top: 0;
+            height: 60px;
+        }
+        
+        .lb-layer {
+            top: 100px;
+            height: 80px;
+        }
+        
+        .servers-layer {
+            top: 220px;
+            height: 100px;
+        }
+        
+        .redis-layer {
+            top: 380px;
+            height: 80px;
+        }
+        
+        /* Components */
+        .clients {
+            font-size: 12px;
+            color: #666;
+            text-align: center;
+        }
+        
+        .load-balancer {
+            width: 200px;
+            height: 60px;
+            background: #1a1a1a;
+            border: 2px solid #444;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            font-size: 12px;
+            z-index: 10;
+        }
+        
+        .load-balancer.alert {
+            border-color: #ff9900;
+            box-shadow: 0 0 20px rgba(255, 153, 0, 0.5);
+        }
+        
+        .servers-container {
+            display: flex;
+            gap: 30px;
+            position: relative;
+        }
+        
+        .server {
+            width: 120px;
+            height: 70px;
+            background: #1a1a1a;
+            border: 2px solid #333;
+            border-radius: 6px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            font-size: 11px;
+            transition: all 0.3s ease;
+        }
+        
+        .server.healthy {
+            border-color: #00ff00;
+        }
+        
+        .server.blocked {
+            border-color: #ff3333;
+            background: rgba(255, 51, 51, 0.1);
+        }
+        
+        .server-name {
+            font-weight: bold;
+            margin-bottom: 3px;
+        }
+        
+        .server-status {
+            font-size: 9px;
+            color: #666;
+        }
+        
+        .queue-indicator {
+            position: absolute;
+            top: -25px;
+            right: -10px;
+            background: #ff3333;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: bold;
+            display: none;
+        }
+        
+        .server.blocked .queue-indicator {
+            display: block;
+        }
+        
+        .redis {
+            width: 160px;
+            height: 70px;
+            background: linear-gradient(135deg, #dc382d 0%, #a8251a 100%);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: bold;
+            color: white;
+            position: relative;
+            box-shadow: 0 5px 20px rgba(220, 56, 45, 0.4);
+        }
+        
+        .redis.blocked {
+            background: linear-gradient(135deg, #666 0%, #333 100%);
+            animation: redisShake 0.5s infinite;
+        }
+        
+        @keyframes redisShake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-2px); }
+            75% { transform: translateX(2px); }
+        }
+        
+        .blocking-operation {
+            position: absolute;
+            top: -30px;
+            font-size: 11px;
+            color: #ff3333;
+            font-weight: bold;
+            display: none;
+        }
+        
+        .redis.blocked .blocking-operation {
+            display: block;
+            animation: pulse 1s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 0.8; }
+            50% { opacity: 1; }
+        }
+        
+        /* Request particles */
+        .request {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            background: #00ff00;
+            border-radius: 50%;
+            box-shadow: 0 0 4px rgba(0, 255, 0, 0.8);
+            z-index: 5;
+            transition: all 0.3s linear;
+        }
+        
+        .request.blocked {
+            background: #ff3333;
+            box-shadow: 0 0 4px rgba(255, 51, 51, 0.8);
+        }
+        
+        .request.error {
+            background: #ff0000;
+            animation: errorFlash 0.3s;
+        }
+        
+        @keyframes errorFlash {
+            0% { transform: scale(1); opacity: 1; }
+            100% { transform: scale(2); opacity: 0; }
+        }
+        
+        /* Connection paths */
+        .connection-path {
+            position: absolute;
+            stroke: #333;
+            stroke-width: 2;
+            fill: none;
+            z-index: 1;
+        }
+        
+        /* Stats dashboard */
+        .stats-dashboard {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 40px;
+            background: #111;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 15px 30px;
+        }
+        
+        .stat {
+            text-align: center;
+        }
+        
+        .stat-label {
+            font-size: 10px;
+            color: #666;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            font-family: monospace;
+            color: #fff;
+        }
+        
+        .stat-value.danger {
+            color: #ff3333;
+        }
+        
+        .stat-value.warning {
+            color: #ff9900;
+        }
+        
+        /* Event log */
+        .event-log {
+            position: absolute;
+            right: 20px;
+            bottom: 120px;
+            width: 250px;
+            height: 250px;
+            background: #0a0a0a;
+            border: 1px solid #222;
+            border-radius: 4px;
+            padding: 10px;
+            overflow-y: auto;
+            font-size: 10px;
+        }
+        
+        .event {
+            margin-bottom: 5px;
+            padding: 3px 0;
+            border-bottom: 1px solid #111;
+            opacity: 0;
+            animation: slideIn 0.3s ease-out forwards;
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        
+        .event-time {
+            color: #666;
+        }
+        
+        .event-message {
+            color: #999;
+        }
+        
+        .event.error .event-message {
+            color: #ff3333;
+        }
+        
+        .event.warning .event-message {
+            color: #ff9900;
+        }
+        
+        /* Autoscale indicator */
+        .autoscale-indicator {
+            position: absolute;
+            left: 20px;
+            top: 220px;
+            background: #1a1a1a;
+            border: 2px solid #ff9900;
+            border-radius: 6px;
+            padding: 10px 15px;
+            font-size: 11px;
+            color: #ff9900;
+            display: none;
+            animation: warningPulse 1s infinite;
+        }
+        
+        @keyframes warningPulse {
+            0%, 100% { opacity: 0.8; }
+            50% { opacity: 1; }
+        }
+        
+        .autoscale-indicator.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Timeline -->
+        <div class="timeline">
+            <div class="time-counter" id="timeCounter">0.0s</div>
+            <div class="phase-label" id="phaseLabel">Normal Operation</div>
+        </div>
+        
+        <!-- Main Flow Diagram -->
+        <div class="flow-diagram" id="flowDiagram">
+            <!-- Connection paths will be added here -->
+            <svg class="connection-path" width="100%" height="100%" style="position: absolute; top: 0; left: 0;">
+                <!-- Paths will be drawn here -->
+            </svg>
+            
+            <!-- Clients Layer -->
+            <div class="layer clients-layer">
+                <div class="clients">
+                    <div style="font-size: 16px; margin-bottom: 5px;">👥 CLIENTS</div>
+                    <div>Incoming Requests</div>
+                </div>
+            </div>
+            
+            <!-- Load Balancer Layer -->
+            <div class="layer lb-layer">
+                <div class="load-balancer" id="loadBalancer">
+                    <span>LOAD BALANCER</span>
+                </div>
+            </div>
+            
+            <!-- Servers Layer -->
+            <div class="layer servers-layer">
+                <div class="servers-container" id="serversContainer">
+                    <!-- Servers will be added dynamically -->
+                </div>
+            </div>
+            
+            <!-- Redis Layer -->
+            <div class="layer redis-layer">
+                <div class="redis" id="redis">
+                    <span>REDIS</span>
+                    <div class="blocking-operation">KEYS session:*</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Stats Dashboard -->
+        <div class="stats-dashboard">
+            <div class="stat">
+                <div class="stat-label">Requests/sec</div>
+                <div class="stat-value" id="requestRate">120</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Queued</div>
+                <div class="stat-value" id="queuedRequests">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Failed</div>
+                <div class="stat-value" id="failedRequests">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Success Rate</div>
+                <div class="stat-value" id="successRate">100%</div>
+            </div>
+        </div>
+        
+        <!-- Event Log -->
+        <div class="event-log" id="eventLog">
+            <div style="color: #666; font-size: 11px; margin-bottom: 10px;">SYSTEM EVENTS</div>
+        </div>
+        
+        <!-- Autoscale Indicator -->
+        <div class="autoscale-indicator" id="autoscaleIndicator">
+            ⚠️ AUTOSCALING TRIGGERED<br>
+            Spawning new instances...
+        </div>
+    </div>
+    
+    <script>
+        // Elements
+        const timeCounter = document.getElementById('timeCounter');
+        const phaseLabel = document.getElementById('phaseLabel');
+        const flowDiagram = document.getElementById('flowDiagram');
+        const serversContainer = document.getElementById('serversContainer');
+        const redis = document.getElementById('redis');
+        const loadBalancer = document.getElementById('loadBalancer');
+        const eventLog = document.getElementById('eventLog');
+        const autoscaleIndicator = document.getElementById('autoscaleIndicator');
+        
+        // Stats elements
+        const requestRate = document.getElementById('requestRate');
+        const queuedRequests = document.getElementById('queuedRequests');
+        const failedRequests = document.getElementById('failedRequests');
+        const successRate = document.getElementById('successRate');
+        
+        // State
+        let startTime = 0;
+        let isBlocked = false;
+        let servers = [];
+        let requests = [];
+        let stats = {
+            total: 0,
+            queued: 0,
+            failed: 0,
+            successful: 0
+        };
+        
+        // Create server
+        function createServer(name, index) {
+            const server = document.createElement('div');
+            server.className = 'server healthy';
+            server.innerHTML = `
+                <div class="server-name">${name}</div>
+                <div class="server-status">Healthy</div>
+                <div class="queue-indicator">0</div>
+            `;
+            server.dataset.name = name;
+            server.dataset.queue = 0;
+            server.dataset.index = index;
+            serversContainer.appendChild(server);
+            servers.push(server);
+            return server;
+        }
+        
+        // Add event to log
+        function addEvent(type, message) {
+            const event = document.createElement('div');
+            event.className = `event ${type}`;
+            const time = ((Date.now() - startTime) / 1000).toFixed(1);
+            event.innerHTML = `
+                <span class="event-time">[${time}s]</span>
+                <span class="event-message">${message}</span>
+            `;
+            eventLog.insertBefore(event, eventLog.children[1]);
+            
+            // Keep only recent events
+            while (eventLog.children.length > 15) {
+                eventLog.removeChild(eventLog.lastChild);
+            }
+        }
+        
+        // Create request particle
+        function createRequest() {
+            const request = document.createElement('div');
+            request.className = 'request';
+            request.dataset.state = 'new';
+            request.dataset.targetServer = Math.floor(Math.random() * servers.length);
+            
+            // Start from clients area
+            const clientsRect = document.querySelector('.clients').getBoundingClientRect();
+            const containerRect = flowDiagram.getBoundingClientRect();
+            
+            request.style.left = (clientsRect.left - containerRect.left + clientsRect.width/2 + (Math.random() - 0.5) * 100) + 'px';
+            request.style.top = (clientsRect.bottom - containerRect.top) + 'px';
+            
+            flowDiagram.appendChild(request);
+            requests.push(request);
+            stats.total++;
+            
+            // Animate to load balancer
+            setTimeout(() => {
+                const lbRect = loadBalancer.getBoundingClientRect();
+                request.style.left = (lbRect.left - containerRect.left + lbRect.width/2) + 'px';
+                request.style.top = (lbRect.bottom - containerRect.top - 10) + 'px';
+                
+                // Then to server
+                setTimeout(() => {
+                    if (servers.length > 0) {
+                        const targetServer = servers[request.dataset.targetServer % servers.length];
+                        const serverRect = targetServer.getBoundingClientRect();
+                        
+                        request.style.left = (serverRect.left - containerRect.left + serverRect.width/2) + 'px';
+                        request.style.top = (serverRect.top - containerRect.top + 10) + 'px';
+                        
+                        // If server is blocked, queue the request
+                        if (targetServer.classList.contains('blocked')) {
+                            request.classList.add('blocked');
+                            const currentQueue = parseInt(targetServer.dataset.queue);
+                            targetServer.dataset.queue = currentQueue + 1;
+                            targetServer.querySelector('.queue-indicator').textContent = targetServer.dataset.queue;
+                            stats.queued++;
+                            updateStats();
+                            
+                            // Request times out after a while
+                            setTimeout(() => {
+                                request.classList.add('error');
+                                stats.failed++;
+                                stats.queued = Math.max(0, stats.queued - 1);
+                                updateStats();
+                                setTimeout(() => {
+                                    request.remove();
+                                    requests = requests.filter(r => r !== request);
+                                }, 300);
+                            }, 3000 + Math.random() * 2000);
+                        } else {
+                            // Try to reach Redis
+                            setTimeout(() => {
+                                if (!isBlocked) {
+                                    const redisRect = redis.getBoundingClientRect();
+                                    request.style.left = (redisRect.left - containerRect.left + redisRect.width/2) + 'px';
+                                    request.style.top = (redisRect.top - containerRect.top + 10) + 'px';
+                                    
+                                    // Success - remove request
+                                    setTimeout(() => {
+                                        request.style.opacity = '0';
+                                        stats.successful++;
+                                        updateStats();
+                                        setTimeout(() => {
+                                            request.remove();
+                                            requests = requests.filter(r => r !== request);
+                                        }, 300);
+                                    }, 500);
+                                } else {
+                                    // Redis is blocked - queue at server
+                                    request.classList.add('blocked');
+                                    const currentQueue = parseInt(targetServer.dataset.queue);
+                                    targetServer.dataset.queue = currentQueue + 1;
+                                    targetServer.querySelector('.queue-indicator').textContent = targetServer.dataset.queue;
+                                    stats.queued++;
+                                    updateStats();
+                                }
+                            }, 300);
+                        }
+                    }
+                }, 300);
+            }, 100);
+        }
+        
+        // Update stats
+        function updateStats() {
+            queuedRequests.textContent = stats.queued.toLocaleString();
+            if (stats.queued > 100) {
+                queuedRequests.classList.add('warning');
+            }
+            if (stats.queued > 1000) {
+                queuedRequests.classList.remove('warning');
+                queuedRequests.classList.add('danger');
+            }
+            
+            failedRequests.textContent = stats.failed.toLocaleString();
+            if (stats.failed > 0) {
+                failedRequests.classList.add('danger');
+            }
+            
+            const rate = stats.total > 0 ? Math.round((stats.successful / stats.total) * 100) : 100;
+            successRate.textContent = rate + '%';
+            if (rate < 90) {
+                successRate.classList.add('warning');
+            }
+            if (rate < 50) {
+                successRate.classList.remove('warning');
+                successRate.classList.add('danger');
+            }
+        }
+        
+        // Start simulation
+        function startSimulation() {
+            startTime = Date.now();
+            
+            // Create initial servers
+            createServer('API-1', 0);
+            createServer('API-2', 1);
+            createServer('API-3', 2);
+            
+            addEvent('normal', 'System operating normally');
+            
+            // Generate continuous requests
+            let requestInterval = setInterval(() => {
+                createRequest();
+                if (Math.random() < 0.3) createRequest(); // Sometimes 2 at once
+            }, 250);
+            
+            // Phase 1: Redis blocks (1s)
+            setTimeout(() => {
+                isBlocked = true;
+                redis.classList.add('blocked');
+                phaseLabel.textContent = 'Redis Blocking - KEYS Command';
+                addEvent('error', 'Redis: Executing KEYS session:*');
+                addEvent('error', 'Redis: Main thread blocked');
+            }, 1000);
+            
+            // Phase 2: Servers start blocking (2s)
+            setTimeout(() => {
+                servers.forEach((server, index) => {
+                    setTimeout(() => {
+                        server.classList.remove('healthy');
+                        server.classList.add('blocked');
+                        server.querySelector('.server-status').textContent = 'Blocked';
+                        addEvent('error', `${server.dataset.name}: Connection timeout`);
+                    }, index * 300);
+                });
+            }, 2000);
+            
+            // Phase 3: Health checks fail (3.5s)
+            setTimeout(() => {
+                phaseLabel.textContent = 'Health Checks Failing';
+                loadBalancer.classList.add('alert');
+                addEvent('warning', 'LoadBalancer: Health checks failing');
+                addEvent('warning', 'LoadBalancer: All backends unhealthy');
+            }, 3500);
+            
+            // Phase 4: Autoscaling (4.5s)
+            setTimeout(() => {
+                phaseLabel.textContent = 'Autoscaling Triggered';
+                autoscaleIndicator.classList.add('active');
+                addEvent('warning', 'AutoScaler: Triggered scale-out');
+                
+                // Add new servers
+                setTimeout(() => {
+                    const newServers = ['API-4', 'API-5', 'API-6'];
+                    newServers.forEach((name, index) => {
+                        setTimeout(() => {
+                            const server = createServer(name, servers.length);
+                            addEvent('normal', `AutoScaler: ${name} online`);
+                            
+                            // New servers also get blocked immediately
+                            setTimeout(() => {
+                                server.classList.remove('healthy');
+                                server.classList.add('blocked');
+                                server.querySelector('.server-status').textContent = 'Blocked';
+                                addEvent('error', `${name}: Immediately blocked`);
+                            }, 500);
+                        }, index * 200);
+                    });
+                }, 500);
+            }, 4500);
+            
+            // Phase 5: Cascade failure (6s)
+            setTimeout(() => {
+                phaseLabel.textContent = 'CASCADE FAILURE';
+                addEvent('error', 'System: Complete cascade failure');
+                
+                // Increase request rate (panic)
+                clearInterval(requestInterval);
+                requestInterval = setInterval(() => {
+                    createRequest();
+                    createRequest();
+                    if (Math.random() < 0.5) createRequest();
+                }, 100);
+            }, 6000);
+            
+            // Phase 6: Redis unblocks (8s)
+            setTimeout(() => {
+                isBlocked = false;
+                redis.classList.remove('blocked');
+                phaseLabel.textContent = 'Redis Unblocked - Damage Done';
+                addEvent('warning', 'Redis: KEYS completed after 8s');
+                addEvent('error', 'System: 10,000+ requests queued');
+                addEvent('error', 'System: Mass timeout cascade');
+                
+                // Stop generating new requests
+                clearInterval(requestInterval);
+                
+                // Show final stats
+                setTimeout(() => {
+                    phaseLabel.textContent = 'System Recovering...';
+                }, 2000);
+            }, 8000);
+            
+            // Update timer
+            const timerInterval = setInterval(() => {
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+                timeCounter.textContent = elapsed + 's';
+                
+                if (elapsed >= 12) {
+                    clearInterval(timerInterval);
+                    setTimeout(resetSimulation, 3000);
+                }
+            }, 100);
+        }
+        
+        // Reset simulation
+        function resetSimulation() {
+            // Clear everything
+            servers = [];
+            requests.forEach(r => r.remove());
+            requests = [];
+            serversContainer.innerHTML = '';
+            stats = { total: 0, queued: 0, failed: 0, successful: 0 };
+            isBlocked = false;
+            
+            // Reset UI
+            redis.classList.remove('blocked');
+            loadBalancer.classList.remove('alert');
+            autoscaleIndicator.classList.remove('active');
+            timeCounter.textContent = '0.0s';
+            phaseLabel.textContent = 'Normal Operation';
+            eventLog.innerHTML = '<div style="color: #666; font-size: 11px; margin-bottom: 10px;">SYSTEM EVENTS</div>';
+            
+            // Reset stats
+            requestRate.textContent = '120';
+            queuedRequests.textContent = '0';
+            queuedRequests.classList.remove('warning', 'danger');
+            failedRequests.textContent = '0';
+            failedRequests.classList.remove('danger');
+            successRate.textContent = '100%';
+            successRate.classList.remove('warning', 'danger');
+            
+            // Restart
+            setTimeout(startSimulation, 1000);
+        }
+        
+        // Start
+        startSimulation();
+    </script>
+</body>
+</html>
